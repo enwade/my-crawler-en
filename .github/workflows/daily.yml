@@ -1,0 +1,39 @@
+name: Daily Scraper
+
+on:
+  schedule:
+    - cron: '0 0 * * *'  # 每天 UTC 0:00 (北京时间 8:00)
+  workflow_dispatch:      # 允许手动触发
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.10'
+    
+    - name: Install dependencies
+      run: |
+        pip install -r requirements.txt
+        playwright install chromium
+        playwright install-deps
+    
+    - name: Run scraper
+      env:
+        AKUBELA_USERNAME: ${{ secrets.AKUBELA_USERNAME }}
+        AKUBELA_PASSWORD: ${{ secrets.AKUBELA_PASSWORD }}
+        SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+        SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+      run: python scraper.py
+    
+    - name: Upload data
+      uses: actions/upload-artifact@v4
+      with:
+        name: scraper-data
+        path: data/
