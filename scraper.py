@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-每天自动运行抓取管控数据
+数据爬虫 - 抓取所有数据
 """
 
 import sys
@@ -64,44 +64,76 @@ class AkubelaScraper:
         logger.info("=" * 50)
         logger.info("开始爬取数据...")
         
-        page = None
-        browser = None
-        
         try:
             with sync_playwright() as p:
-                # 1. 启动浏览器 (使用 2.py 的配置，保证稳定)
-                browser = p.chromium.launch(headless=True, slow_mo=500)
-                context = browser.new_context(viewport={'width': 1920, 'height': 1080})
-                page = context.new_page()
+                browser = p.chromium.launch(headless=True)
+                page = browser.new_page(viewport={'width': 1920, 'height': 1080})
                 
-                # 2. 登录
+                # 1. 登录
                 logger.info("正在登录...")
-                self.login(page)
-                
-                # 3. 选择环境
-                logger.info("选择环境...")
-                self.select_environment(page)
-                
-                # 4. 抓取设备数据 (直接使用 page.goto 在当前会话跳转，保证 Cookie 有效)
-                logger.info("抓取设备数据 (筛选: 已限制)...")
-                page.goto("https://super.akubela.com/#/distributor/device")
+                page.goto("https://super.akubela.com/#/login")
                 page.wait_for_load_state("networkidle")
-                time.sleep(5) # 等待页面骨架加载
-                self.scrape_data1(page)
+                time.sleep(3)
                 
-                # 5. 抓取跨区管控数据 (继续在当前会话跳转)
-                logger.info("抓取跨区管控数据 (筛选: 高)...")
-                page.goto("https://super.akubela.com/#/distributor/cross-region")
-                page.wait_for_load_state("networkidle")
+                page.fill('input[type="text"]:visible', self.username)
+                page.fill('input[type="password"]', self.password)
+                page.click('.el-button--primary')
+                page.wait_for_load_state("networkidle", timeout=15000)
                 time.sleep(5)
-                self.scrape_data2(page)
+                
+                # 截图检查登录状态
+                page.screenshot(path='data/login_result.png')
+                logger.info("登录截图已保存")
+                
+                if "login" in page.url:
+                    logger.error("登录失败，仍然在登录页面")
+                    browser.close()
+                    return False
+                logger.info(f"登录成功，当前URL: {page.url}")
+                
+                # 2. 选择环境
+                try:
+                    if page.is_visible('div[role="combobox"]'):
+                        page.click('div[role="combobox"]')
+                        time.sleep(2)
+                        page.click(f'text={self.environment}')
+                        logger.info(f"已选择环境: {self.environment}")
+                        time.sleep(2)
+                except Exception as e:
+                    logger.warning(f"选择环境失败: {e}")
+                
+                # 3. 抓取设备数据
+                logger.info("抓取设备数据...")
+                page.goto("https://super.akubela.com/#/distributor/device")
+                page.wait_for_load_state("networkidle", timeout=15000)
+                time.sleep(10)
+                
+                # 截图
+                page.screenshot(path='data/device_page.png')
+                logger.info("设备页面截图已保存")
+                
+                self.device_data = self.get_table_data(page)
+                logger.info(f"设备数据: {len(self.device_data)} 条")
+                
+                # 4. 抓取跨区管控数据
+                logger.info("抓取跨区管控数据...")
+                page.goto("https://super.akubela.com/#/distributor/cross-region")
+                page.wait_for_load_state("networkidle", timeout=15000)
+                time.sleep(10)
+                
+                # 截图
+                page.screenshot(path='data/cross_region_page.png')
+                logger.info("跨区管控页面截图已保存")
+                
+                self.cross_region_data = self.get_table_data(page)
+                logger.info(f"跨区管控数据: {len(self.cross_region_data)} 条")
                 
                 browser.close()
             
-            # 6. 保存数据
+            # 5. 保存数据
             self.save_data()
             
-            # 7. 发送邮件
+            # 6. 发送邮件
             self.send_email()
             
             logger.info("爬取完成！")
@@ -109,265 +141,173 @@ class AkubelaScraper:
             return True
             
         except Exception as e:
-            logger.error(f"运行出错: {e}")
-            if page:
-                try:
-                    page.screenshot(path="error_screenshot.png")
-                    logger.info("已保存错误截图: error_screenshot.png")
-                except:
-                    pass
+            logger.error(f"出错: {e}")
             return False
-
-    # ---------------------------------------------------------
-    # 核心逻辑模块：极其健壮的登录、操作和提取
-    # ---------------------------------------------------------
-
-    def login(self, page):
-        page.goto("https://super.akubela.com/#/login")
-        page.wait_for_load_state("networkidle")
-        time.sleep(3)
-        
-        # 尝试多种方式定位用户名
-        username_selectors = ['input[placeholder*="用户名"]', 'input[placeholder*="账号"]', 'input[type="text"]:visible']
-        for selector in username_selectors:
-            try:
-                if page.is_visible(selector):
-                    page.fill(selector, self.username)
-                    break
-            except:
-                continue
-        
-        # 尝试多种方式定位密码
-        password_selectors = ['input[placeholder*="密码"]', 'input[type="password"]']
-        for selector in password_selectors:
-            try:
-                if page.is_visible(selector):
-                    page.fill(selector, self.password)
-                    break
-            except:
-                continue
-        
-        time.sleep(0.5)
-        
-        # 多种方式点击登录
-        login_selectors = ['button:has-text("登录")', 'button:has-text("Login")', 'button[type="submit"]', '.el-button--primary']
-        clicked = False
-        for selector in login_selectors:
-            try:
-                if page.is_visible(selector):
-                    page.click(selector)
-                    clicked = True
-                    break
-            except:
-                continue
-        if not clicked:
-            page.keyboard.press('Enter')
-        
-        page.wait_for_load_state("networkidle", timeout=15000)
-        time.sleep(3)
-        logger.info("登录成功")
-
-    def select_environment(self, page):
-        time.sleep(2)
-        selectors = ['select:has-text("选择环境")', '.el-select .el-input__inner', 'div[role="combobox"]']
-        clicked = False
-        for selector in selectors:
-            try:
-                if page.is_visible(selector):
-                    page.click(selector)
-                    time.sleep(1)
-                    clicked = True
-                    break
-            except:
-                continue
-        
-        if clicked:
-            try:
-                page.click(f'text={self.environment}')
-                time.sleep(1)
-                logger.info(f"已选择环境：{self.environment}")
-            except:
-                logger.warning("未找到目标环境选项")
-            
-            try:
-                page.click('button:has-text("确认"), button:has-text("确定")')
-                time.sleep(1)
-            except:
-                pass
-        page.wait_for_load_state("networkidle")
-
-    def scrape_data1(self, page):
-        # 注意：这里不再写 page.goto，因为已经在 run 函数里跳转了
-        # 1. 点击授权状态下拉框
-        try:
-            status_selectors = ['text=授权状态', 'div:has-text("授权状态")', 'span:has-text("授权状态")']
-            for selector in status_selectors:
-                if page.is_visible(selector):
-                    page.click(selector)
-                    time.sleep(1)
-                    break
-            # 2. 选择"已限制"
-            for option in ['已限制', 'restricted', 'Restricted']:
-                if page.is_visible(f'text={option}'):
-                    page.click(f'text={option}')
-                    time.sleep(1)
-                    break
-        except Exception as e:
-            logger.warning(f"选择授权状态失败: {e}")
-
-        # 3. 点击搜索按钮
-        search_btns = ['button:has-text("搜索")', 'button:has-text("查询")', '.el-button:has-text("搜索")']
-        for btn in search_btns:
-            try:
-                if page.is_visible(btn):
-                    page.click(btn)
-                    time.sleep(3)
-                    break
-            except:
-                continue
-        
-        page.wait_for_load_state("networkidle")
-        time.sleep(3)
-        self.device_data = self.extract_table_data(page)
-        logger.info(f"设备数据(已限制): {len(self.device_data)} 条")
-
-    def scrape_data2(self, page):
-        # 注意：这里不再写 page.goto，run 函数里已跳转
-        # 1. 点击风险等级下拉框
-        try:
-            risk_selectors = ['text=风险等级', 'div:has-text("风险等级")', 'span:has-text("风险等级")']
-            for selector in risk_selectors:
-                if page.is_visible(selector):
-                    page.click(selector)
-                    time.sleep(1)
-                    break
-            # 2. 选择"高"
-            for option in ['高', 'high', 'High']:
-                if page.is_visible(f'text={option}'):
-                    page.click(f'text={option}')
-                    time.sleep(1)
-                    break
-        except Exception as e:
-            logger.warning(f"选择风险等级失败: {e}")
-
-        # 3. 点击搜索按钮
-        search_btns = ['button:has-text("搜索")', 'button:has-text("查询")', '.el-button:has-text("搜索")']
-        for btn in search_btns:
-            try:
-                if page.is_visible(btn):
-                    page.click(btn)
-                    time.sleep(3)
-                    break
-            except:
-                continue
-        
-        page.wait_for_load_state("networkidle")
-        time.sleep(3)
-        self.cross_region_data = self.extract_table_data(page)
-        logger.info(f"跨区管控数据(高风险): {len(self.cross_region_data)} 条")
-
-    def extract_table_data(self, page):
-        """极其健壮的表格数据提取逻辑"""
+    
+    def get_table_data(self, page):
+        """提取表格数据 - 增强版"""
         data = []
         try:
             time.sleep(3)
-            tables = page.locator('table').all()
-            if not tables:
-                return data
             
-            for table in tables:
-                # 提取表头
-                headers = []
-                try:
-                    header_cells = table.locator('thead th').all()
-                    if header_cells:
-                        headers = [cell.text_content().strip() for cell in header_cells]
-                except:
-                    try:
-                        first_row = table.locator('tr').first
-                        first_cells = first_row.locator('th, td').all()
-                        if first_cells:
-                            headers = [cell.text_content().strip() for cell in first_cells]
-                    except:
-                        pass
-                
-                # 提取行
+            rows = []
+            
+            # 方法1：通过 table 标签
+            try:
+                table = page.locator('table').first
                 rows = table.locator('tbody tr').all()
-                if not rows:
-                    all_rows = table.locator('tr').all()
-                    if len(all_rows) > 1:
-                        rows = all_rows[1:]
-                
-                for row in rows:
+                logger.info(f"方法1 - 通过table找到 {len(rows)} 行")
+            except:
+                pass
+            
+            # 方法2：通过 el-table 类
+            if not rows:
+                try:
+                    table = page.locator('.el-table')
+                    if table.count() > 0:
+                        rows = table.locator('tbody tr').all()
+                        logger.info(f"方法2 - 通过el-table找到 {len(rows)} 行")
+                except:
+                    pass
+            
+            # 方法3：通过 xpath
+            if not rows:
+                try:
+                    rows = page.locator('//table//tbody//tr').all()
+                    logger.info(f"方法3 - 通过xpath找到 {len(rows)} 行")
+                except:
+                    pass
+            
+            # 检查是否有"暂无数据"
+            if not rows:
+                try:
+                    no_data = page.locator('text=暂无数据')
+                    if no_data.count() > 0:
+                        logger.warning("页面显示：暂无数据")
+                    else:
+                        no_data = page.locator('.el-table__empty-text')
+                        if no_data.count() > 0:
+                            logger.warning("页面显示：暂无数据（el-table空状态）")
+                except:
+                    pass
+            
+            for row in rows:
+                try:
                     cells = row.locator('td').all()
-                    row_data = {}
-                    for i, cell in enumerate(cells):
-                        cell_text = cell.text_content().strip()
-                        if i < len(headers):
-                            row_data[headers[i]] = cell_text
-                        else:
-                            row_data[f'列{i+1}'] = cell_text
-                    if row_data:
+                    if cells:
+                        row_data = {}
+                        for i, cell in enumerate(cells):
+                            text = cell.text_content().strip()
+                            row_data[f'列{i+1}'] = text
                         data.append(row_data)
+                except:
+                    continue
                 
-                if data:
-                    break
         except Exception as e:
-            logger.error(f"提取数据异常: {e}")
+            logger.error(f"提取表格数据时出错: {e}")
         
         return data
-
-    # ---------------------------------------------------------
-    # 数据保存和邮件模块
-    # ---------------------------------------------------------
-
+    
     def save_data(self):
-        with open(self.device_json, 'w', encoding='utf-8') as f:
-            json.dump(self.device_data, f, ensure_ascii=False, indent=2)
+        """保存数据"""
+        logger.info("保存数据...")
         
-        with open(self.cross_region_json, 'w', encoding='utf-8') as f:
-            json.dump(self.cross_region_data, f, ensure_ascii=False, indent=2)
+        # 保存 JSON
+        try:
+            with open(self.device_json, 'w', encoding='utf-8') as f:
+                json.dump(self.device_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"设备JSON已保存: {self.device_json}")
+        except Exception as e:
+            logger.error(f"保存设备JSON失败: {e}")
         
-        if self.device_data:
-            pd.DataFrame(self.device_data).to_excel(self.device_excel, index=False)
-        if self.cross_region_data:
-            pd.DataFrame(self.cross_region_data).to_excel(self.cross_region_excel, index=False)
+        try:
+            with open(self.cross_region_json, 'w', encoding='utf-8') as f:
+                json.dump(self.cross_region_data, f, ensure_ascii=False, indent=2)
+            logger.info(f"跨区JSON已保存: {self.cross_region_json}")
+        except Exception as e:
+            logger.error(f"保存跨区JSON失败: {e}")
         
-        logger.info("数据已保存")
-
+        # 保存 Excel
+        try:
+            if self.device_data:
+                df = pd.DataFrame(self.device_data)
+                df.to_excel(self.device_excel, index=False, engine='openpyxl')
+                logger.info(f"设备Excel已保存: {self.device_excel}")
+            else:
+                logger.warning("设备数据为空，不生成Excel")
+        except Exception as e:
+            logger.error(f"保存设备Excel失败: {e}")
+        
+        try:
+            if self.cross_region_data:
+                df = pd.DataFrame(self.cross_region_data)
+                df.to_excel(self.cross_region_excel, index=False, engine='openpyxl')
+                logger.info(f"跨区Excel已保存: {self.cross_region_excel}")
+            else:
+                logger.warning("跨区数据为空，不生成Excel")
+        except Exception as e:
+            logger.error(f"保存跨区Excel失败: {e}")
+    
     def send_email(self):
+        """发送邮件"""
         try:
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.receiver_email
-            msg['Subject'] = f'跨区管控数据报告 - {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+            msg['Subject'] = f'Akubela数据报告 - {datetime.now().strftime("%Y-%m-%d %H:%M")}'
             
             body = f"""
-            <h2>跨区管控数据报告</h2>
+            <h2>Akubela 数据报告</h2>
             <p>爬取时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
             <p>环境: {self.environment}</p>
             <table border="1">
-                <tr><th>数据源</th><th>记录数</th></tr>
-                <tr><td>设备数据 (已限制)</td><td>{len(self.device_data)}</td></tr>
-                <tr><td>跨区管控数据 (高风险)</td><td>{len(self.cross_region_data)}</td></tr>
+                <tr><th>数据源</th><th>记录数</th><th>状态</th></tr>
+                <tr>
+                    <td>设备数据</td>
+                    <td>{len(self.device_data)}</td>
+                    <td>{'✅ 有数据' if len(self.device_data) > 0 else '⚠️ 无数据'}</td>
+                </tr>
+                <tr>
+                    <td>跨区管控数据</td>
+                    <td>{len(self.cross_region_data)}</td>
+                    <td>{'✅ 有数据' if len(self.cross_region_data) > 0 else '⚠️ 无数据'}</td>
+                </tr>
             </table>
+            <p>附件为数据文件（JSON + Excel）</p>
             """
             msg.attach(MIMEText(body, 'html', 'utf-8'))
             
-            for file in [self.device_excel, self.cross_region_excel]:
-                if Path(file).exists():
-                    with open(file, 'rb') as f:
-                        part = MIMEBase('application', 'octet-stream')
-                        part.set_payload(f.read())
-                        encoders.encode_base64(part)
-                        part.add_header('Content-Disposition', f'attachment; filename="{Path(file).name}"')
-                        msg.attach(part)
+            # 添加附件
+            files_to_attach = [
+                self.device_excel if Path(self.device_excel).exists() else None,
+                self.cross_region_excel if Path(self.cross_region_excel).exists() else None,
+                self.device_json if Path(self.device_json).exists() else None,
+                self.cross_region_json if Path(self.cross_region_json).exists() else None,
+            ]
             
+            attached_count = 0
+            for file_path in files_to_attach:
+                if file_path:
+                    try:
+                        with open(file_path, 'rb') as f:
+                            part = MIMEBase('application', 'octet-stream')
+                            part.set_payload(f.read())
+                            encoders.encode_base64(part)
+                            part.add_header('Content-Disposition', f'attachment; filename="{Path(file_path).name}"')
+                            msg.attach(part)
+                            attached_count += 1
+                    except Exception as e:
+                        logger.error(f"添加附件失败 {file_path}: {e}")
+            
+            logger.info(f"共添加 {attached_count} 个附件")
+            
+            # 发送
             server = smtplib.SMTP_SSL(self.smtp_server, self.smtp_port)
             server.login(self.sender_email, self.sender_password)
             server.sendmail(self.sender_email, self.receiver_email, msg.as_string())
             server.quit()
             logger.info("邮件发送成功")
+            
         except Exception as e:
             logger.error(f"邮件发送失败: {e}")
 
