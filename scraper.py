@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-数据爬虫 - 抓取所有数据
+数据爬虫 - 抓取所有数据（优化版，增加等待时间）
 """
 
 import sys
@@ -18,7 +18,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, TimeoutError
 
 # 配置日志
 logging.basicConfig(
@@ -60,26 +60,60 @@ class AkubelaScraper:
         self.device_excel = f'data/devices_{self.timestamp}.xlsx'
         self.cross_region_excel = f'data/cross_region_{self.timestamp}.xlsx'
     
+    def wait_for_page_load(self, page, timeout=60000):
+        """等待页面完全加载，增加超时时间"""
+        try:
+            page.wait_for_load_state("networkidle", timeout=timeout)
+        except:
+            logger.warning("网络空闲等待超时，继续执行")
+        time.sleep(5)  # 额外等待
+    
+    def safe_click(self, page, selector, timeout=30000, retry=3):
+        """安全点击，带重试"""
+        for i in range(retry):
+            try:
+                page.wait_for_selector(selector, timeout=timeout)
+                page.click(selector)
+                return True
+            except:
+                logger.warning(f"点击失败 {selector}，第 {i+1} 次重试...")
+                time.sleep(3)
+        return False
+    
     def run(self):
         logger.info("=" * 50)
         logger.info("开始爬取数据...")
+        logger.info("注意：由于服务器在美国，访问国内服务可能较慢，请耐心等待")
         
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=True)
+                # 使用更慢的操作速度
+                browser = p.chromium.launch(headless=True, slow_mo=1000)
                 page = browser.new_page(viewport={'width': 1920, 'height': 1080})
                 
-                # 1. 登录
+                # 设置更长的超时时间
+                page.set_default_timeout(60000)
+                
+                # 1. 登录 - 增加等待
                 logger.info("正在登录...")
-                page.goto("https://super.akubela.com/#/login")
-                page.wait_for_load_state("networkidle")
+                page.goto("https://super.akubela.com/#/login", timeout=60000)
+                self.wait_for_page_load(page)
+                
+                # 等待输入框出现
+                logger.info("等待输入框加载...")
+                page.wait_for_selector('input[type="text"]:visible', timeout=60000)
                 time.sleep(3)
                 
                 page.fill('input[type="text"]:visible', self.username)
                 page.fill('input[type="password"]', self.password)
+                
+                # 点击登录
+                logger.info("点击登录按钮...")
                 page.click('.el-button--primary')
-                page.wait_for_load_state("networkidle", timeout=15000)
-                time.sleep(5)
+                
+                # 等待登录完成 - 加长等待
+                logger.info("等待登录完成...")
+                time.sleep(10)  # 给服务器足够时间响应
                 
                 # 截图检查登录状态
                 page.screenshot(path='data/login_result.png')
@@ -91,22 +125,36 @@ class AkubelaScraper:
                     return False
                 logger.info(f"登录成功，当前URL: {page.url}")
                 
-                # 2. 选择环境
+                # 2. 选择环境 - 增加等待
+                logger.info("等待环境选择器加载...")
+                time.sleep(8)  # 额外等待下拉框加载
+                
                 try:
-                    if page.is_visible('div[role="combobox"]'):
-                        page.click('div[role="combobox"]')
-                        time.sleep(2)
+                    # 先截图看页面状态
+                    page.screenshot(path='data/env_page.png')
+                    
+                    # 等待环境选择器出现
+                    env_selector = 'div[role="combobox"]'
+                    if page.wait_for_selector(env_selector, timeout=30000):
+                        logger.info("环境选择器已加载")
+                        page.click(env_selector)
+                        time.sleep(3)  # 等待下拉选项加载
+                        
+                        # 点击目标环境
                         page.click(f'text={self.environment}')
                         logger.info(f"已选择环境: {self.environment}")
-                        time.sleep(2)
+                        time.sleep(3)
+                    else:
+                        logger.warning("环境选择器未加载，跳过")
                 except Exception as e:
                     logger.warning(f"选择环境失败: {e}")
+                    page.screenshot(path='data/env_error.png')
                 
-                # 3. 抓取设备数据
-                logger.info("抓取设备数据...")
-                page.goto("https://super.akubela.com/#/distributor/device")
-                page.wait_for_load_state("networkidle", timeout=15000)
-                time.sleep(10)
+                # 3. 抓取设备数据 - 大幅增加等待
+                logger.info("跳转到设备页面...")
+                page.goto("https://super.akubela.com/#/distributor/device", timeout=60000)
+                logger.info("等待设备页面加载...")
+                time.sleep(15)  # 给更多时间加载数据
                 
                 # 截图
                 page.screenshot(path='data/device_page.png')
@@ -116,10 +164,10 @@ class AkubelaScraper:
                 logger.info(f"设备数据: {len(self.device_data)} 条")
                 
                 # 4. 抓取跨区管控数据
-                logger.info("抓取跨区管控数据...")
-                page.goto("https://super.akubela.com/#/distributor/cross-region")
-                page.wait_for_load_state("networkidle", timeout=15000)
-                time.sleep(10)
+                logger.info("跳转到跨区管控页面...")
+                page.goto("https://super.akubela.com/#/distributor/cross-region", timeout=60000)
+                logger.info("等待跨区管控页面加载...")
+                time.sleep(15)
                 
                 # 截图
                 page.screenshot(path='data/cross_region_page.png')
@@ -148,15 +196,18 @@ class AkubelaScraper:
         """提取表格数据 - 增强版"""
         data = []
         try:
-            time.sleep(3)
+            # 等待表格加载
+            logger.info("等待表格数据加载...")
+            time.sleep(5)
             
             rows = []
             
             # 方法1：通过 table 标签
             try:
                 table = page.locator('table').first
-                rows = table.locator('tbody tr').all()
-                logger.info(f"方法1 - 通过table找到 {len(rows)} 行")
+                if table.count() > 0:
+                    rows = table.locator('tbody tr').all()
+                    logger.info(f"方法1 - 通过table找到 {len(rows)} 行")
             except:
                 pass
             
