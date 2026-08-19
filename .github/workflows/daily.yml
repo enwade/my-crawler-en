@@ -17,43 +17,18 @@ jobs:
       with:
         python-version: '3.10'
     
+    # 这一步已经包含了安装 Playwright 和其系统依赖，不要再手动 apt-get update 了
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         playwright install chromium
     
-    - name: Install browser dependencies (fix)
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          libnss3 \
-          libatk-bridge2.0-0 \
-          libdrm2 \
-          libxkbcommon0 \
-          libgbm1 \
-          libasound2t64 \
-          libxcomposite1 \
-          libxdamage1 \
-          libxfixes3 \
-          libxrandr2 \
-          libxtst6 \
-          libpango-1.0-0 \
-          libcairo2 \
-          libatspi2.0-0 \
-          libx11-xcb1 \
-          libxcb1 \
-          libxcb-shm0 \
-          libxcb-xfixes0 \
-          libxcb-shape0 \
-          libxcb-randr0 \
-          libxcb-keysyms1 \
-          libxcb-icccm4 \
-          libxcb-xinerama0 \
-          libxcb-xkb1 \
-          libxkbcommon-x11-0
-      continue-on-error: true
-    
+    # ⚠️ 删掉下面这一大段 Install browser dependencies (fix) 步骤
+    # - name: Install browser dependencies (fix)
+    #   run: ...
+    #   continue-on-error: true
+
     - name: Run scraper
       env:
         AKUBELA_USERNAME: ${{ secrets.AKUBELA_USERNAME }}
