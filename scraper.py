@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Akubela 数据爬虫 - 每天自动运行 (融合2.py强大抓取逻辑)
+每天自动运行抓取管控数据
 """
 
 import sys
@@ -69,36 +69,39 @@ class AkubelaScraper:
         
         try:
             with sync_playwright() as p:
-                # 核心改动1：沿用2.py的稳定浏览器配置
-                browser = p.chromium.launch(
-                    headless=True, 
-                    slow_mo=500  # 增加操作间隔，模拟真人，减少因为快导致的定位失败
-                )
+                # 1. 启动浏览器 (使用 2.py 的配置，保证稳定)
+                browser = p.chromium.launch(headless=True, slow_mo=500)
                 context = browser.new_context(viewport={'width': 1920, 'height': 1080})
                 page = context.new_page()
                 
-                # 1. 登录 (采用2.py的容错机制)
+                # 2. 登录
                 logger.info("正在登录...")
                 self.login(page)
                 
-                # 2. 选择环境 (采用2.py的容错机制)
+                # 3. 选择环境
                 logger.info("选择环境...")
                 self.select_environment(page)
                 
-                # 3. 抓取设备数据 (授权状态=已限制)
+                # 4. 抓取设备数据 (直接使用 page.goto 在当前会话跳转，保证 Cookie 有效)
                 logger.info("抓取设备数据 (筛选: 已限制)...")
+                page.goto("https://super.akubela.com/#/distributor/device")
+                page.wait_for_load_state("networkidle")
+                time.sleep(5) # 等待页面骨架加载
                 self.scrape_data1(page)
                 
-                # 4. 抓取跨区管控数据 (风险等级=高)
+                # 5. 抓取跨区管控数据 (继续在当前会话跳转)
                 logger.info("抓取跨区管控数据 (筛选: 高)...")
+                page.goto("https://super.akubela.com/#/distributor/cross-region")
+                page.wait_for_load_state("networkidle")
+                time.sleep(5)
                 self.scrape_data2(page)
                 
                 browser.close()
             
-            # 5. 保存数据
+            # 6. 保存数据
             self.save_data()
             
-            # 6. 发送邮件
+            # 7. 发送邮件
             self.send_email()
             
             logger.info("爬取完成！")
@@ -116,7 +119,7 @@ class AkubelaScraper:
             return False
 
     # ---------------------------------------------------------
-    # 以下核心逻辑直接融合 2.py 的强大实现
+    # 核心逻辑模块：极其健壮的登录、操作和提取
     # ---------------------------------------------------------
 
     def login(self, page):
@@ -145,7 +148,8 @@ class AkubelaScraper:
                 continue
         
         time.sleep(0.5)
-        # 多种方式登录
+        
+        # 多种方式点击登录
         login_selectors = ['button:has-text("登录")', 'button:has-text("Login")', 'button[type="submit"]', '.el-button--primary']
         clicked = False
         for selector in login_selectors:
@@ -157,7 +161,7 @@ class AkubelaScraper:
             except:
                 continue
         if not clicked:
-            page.keyboard.press('Enter') # 回车兜底
+            page.keyboard.press('Enter')
         
         page.wait_for_load_state("networkidle", timeout=15000)
         time.sleep(3)
@@ -193,11 +197,7 @@ class AkubelaScraper:
         page.wait_for_load_state("networkidle")
 
     def scrape_data1(self, page):
-        # 进入代理限制 -> 设备
-        page.goto("https://super.akubela.com/#/distributor/device")
-        page.wait_for_load_state("networkidle")
-        time.sleep(5)
-        
+        # 注意：这里不再写 page.goto，因为已经在 run 函数里跳转了
         # 1. 点击授权状态下拉框
         try:
             status_selectors = ['text=授权状态', 'div:has-text("授权状态")', 'span:has-text("授权状态")']
@@ -232,11 +232,7 @@ class AkubelaScraper:
         logger.info(f"设备数据(已限制): {len(self.device_data)} 条")
 
     def scrape_data2(self, page):
-        # 进入跨区管控页面
-        page.goto("https://super.akubela.com/#/distributor/cross-region")
-        page.wait_for_load_state("networkidle")
-        time.sleep(5)
-        
+        # 注意：这里不再写 page.goto，run 函数里已跳转
         # 1. 点击风险等级下拉框
         try:
             risk_selectors = ['text=风险等级', 'div:has-text("风险等级")', 'span:has-text("风险等级")']
@@ -271,7 +267,7 @@ class AkubelaScraper:
         logger.info(f"跨区管控数据(高风险): {len(self.cross_region_data)} 条")
 
     def extract_table_data(self, page):
-        """2.py 的核心提取逻辑，极其稳健"""
+        """极其健壮的表格数据提取逻辑"""
         data = []
         try:
             time.sleep(3)
@@ -322,7 +318,7 @@ class AkubelaScraper:
         return data
 
     # ---------------------------------------------------------
-    # 以下沿用 1.py 原有的保存和发送邮件逻辑
+    # 数据保存和邮件模块
     # ---------------------------------------------------------
 
     def save_data(self):
