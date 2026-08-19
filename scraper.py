@@ -163,10 +163,10 @@ class AkubelaScraper:
             msg = MIMEMultipart()
             msg['From'] = self.sender_email
             msg['To'] = self.receiver_email
-            msg['Subject'] = f'Akubela数据报告 - {datetime.now().strftime("%Y-%m-%d %H:%M")}'
+            msg['Subject'] = f'跨区管控数据报告 - {datetime.now().strftime("%Y-%m-%d %H:%M")}'
             
             body = f"""
-            <h2>Akubela 数据报告</h2>
+            <h2>跨区管控数据报告</h2>
             <p>爬取时间: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}</p>
             <p>环境: {self.environment}</p>
             <table border="1">
