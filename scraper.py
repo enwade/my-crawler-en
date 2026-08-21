@@ -140,6 +140,48 @@ class AkubelaScraper:
         logger.info(f"  📸 截图保存: {filename}")
         return filename
 
+    # ==================== 等待数据加载完成 ====================
+    def wait_for_data_loaded(self, page, timeout=60000):
+        """等待页面数据加载完成（参考2.py的逻辑）"""
+        logger.info("  等待数据加载完成...")
+        start = time.time()
+        loading_selectors = [
+            '.el-loading-mask',
+            '.loading',
+            'text=加载中',
+            'text=Loading',
+            '.el-table__body-wrapper.is-scrolling-none .el-table__empty-text'
+        ]
+        # 先等待加载遮罩消失或出现
+        while time.time() - start < timeout / 1000:
+            loading_found = False
+            for sel in loading_selectors:
+                try:
+                    if page.locator(sel).count() > 0 and page.locator(sel).is_visible():
+                        loading_found = True
+                        break
+                except:
+                    pass
+            if not loading_found:
+                # 检查表格是否出现
+                try:
+                    if page.locator('table').count() > 0 or page.locator('.el-table').count() > 0:
+                        logger.info("  ✅ 表格已出现，加载完成")
+                        time.sleep(3)  # 额外等待渲染
+                        return True
+                except:
+                    pass
+                # 也可能页面显示"暂无数据"
+                try:
+                    if page.locator('text=暂无数据').count() > 0:
+                        logger.info("  ✅ 页面显示暂无数据，加载完成")
+                        return True
+                except:
+                    pass
+            time.sleep(1)
+        logger.warning("  ⚠️ 数据加载超时，继续尝试")
+        return False
+
     # ==================== 导航函数 ====================
     def navigate_to_agent_restriction(self, page):
         """导航到代理限制菜单"""
@@ -231,32 +273,10 @@ class AkubelaScraper:
 
     # ==================== 数据提取 ====================
     def get_table_data(self, page):
-        """提取表格数据"""
+        """提取表格数据（调用前确保数据已加载）"""
         data = []
         try:
-            logger.info("    等待表格加载...")
-            table_selectors = ['table', '.el-table', '.el-table__body']
-            table_found = False
-            for _ in range(5):
-                for sel in table_selectors:
-                    if page.locator(sel).count() > 0:
-                        logger.info(f"    ✅ 找到表格: {sel}")
-                        table_found = True
-                        break
-                if table_found:
-                    break
-                time.sleep(3)
-
-            if not table_found:
-                if page.locator('text=暂无数据').count() > 0:
-                    logger.warning("    页面显示：暂无数据")
-                elif page.locator('.el-table__empty-text').count() > 0:
-                    logger.warning("    页面显示：空状态")
-                else:
-                    logger.warning("    未找到表格")
-                return data
-
-            time.sleep(3)
+            logger.info("    开始提取表格数据...")
             rows = []
             methods = [
                 ('table', 'table tbody tr'),
@@ -273,7 +293,12 @@ class AkubelaScraper:
                     continue
 
             if not rows:
-                logger.warning("    未找到任何数据行")
+                if page.locator('text=暂无数据').count() > 0:
+                    logger.warning("    页面显示：暂无数据")
+                elif page.locator('.el-table__empty-text').count() > 0:
+                    logger.warning("    页面显示：空状态")
+                else:
+                    logger.warning("    未找到任何数据行")
                 return data
 
             for row in rows:
@@ -297,7 +322,7 @@ class AkubelaScraper:
     # ==================== 主流程 ====================
     def run(self):
         logger.info("=" * 70)
-        logger.info("开始爬取 Akubela 数据（带截图诊断）")
+        logger.info("开始爬取 Akubela 数据（带截图诊断 & 完整等待）")
         logger.info(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         logger.info("=" * 70)
 
@@ -388,9 +413,13 @@ class AkubelaScraper:
                 logger.info("【步骤3】抓取数据1: 设备 -> 授权状态=已限制")
                 try:
                     self.navigate_to_device(page)
-                    self.take_screenshot(page, "03_device_page")
+                    self.take_screenshot(page, "03_device_page_before_load")
+                    
+                    # 等待数据加载完成
+                    self.wait_for_data_loaded(page)
+                    self.take_screenshot(page, "03_device_page_after_load")
 
-                    time.sleep(5)
+                    time.sleep(3)  # 额外稳定
                     self.select_dropdown_option(page, "授权状态", "已限制")
 
                     # 点击搜索
@@ -414,9 +443,12 @@ class AkubelaScraper:
                     if not searched:
                         logger.warning("  ⚠️ 未找到搜索按钮")
 
+                    # 等待搜索结果
                     time.sleep(5)
                     page.wait_for_load_state("networkidle", timeout=30000)
                     time.sleep(3)
+                    # 再次等待数据加载
+                    self.wait_for_data_loaded(page)
                     self.take_screenshot(page, "04_device_search_result")
 
                     self.data1 = self.get_table_data(page)
@@ -425,14 +457,18 @@ class AkubelaScraper:
                 except Exception as e:
                     logger.error(f"  ❌ 抓取数据1失败: {e}")
                     self.error_message += "数据1失败;"
+                    self.take_screenshot(page, "04_device_error")
 
                 # ========== 步骤4: 抓取数据2 ==========
                 logger.info("【步骤4】抓取数据2: 跨区管控 -> 风险事件=高")
                 try:
                     self.navigate_to_cross_region(page)
-                    self.take_screenshot(page, "05_cross_region_page")
+                    self.take_screenshot(page, "05_cross_region_page_before_load")
+                    
+                    self.wait_for_data_loaded(page)
+                    self.take_screenshot(page, "05_cross_region_page_after_load")
 
-                    time.sleep(5)
+                    time.sleep(3)
                     self.select_dropdown_option(page, "风险事件", "高")
 
                     logger.info("  点击搜索按钮...")
@@ -458,6 +494,7 @@ class AkubelaScraper:
                     time.sleep(5)
                     page.wait_for_load_state("networkidle", timeout=30000)
                     time.sleep(3)
+                    self.wait_for_data_loaded(page)
                     self.take_screenshot(page, "06_cross_region_search_result")
 
                     self.data2 = self.get_table_data(page)
@@ -466,6 +503,7 @@ class AkubelaScraper:
                 except Exception as e:
                     logger.error(f"  ❌ 抓取数据2失败: {e}")
                     self.error_message += "数据2失败;"
+                    self.take_screenshot(page, "06_cross_region_error")
 
                 browser.close()
 
